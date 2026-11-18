@@ -33,7 +33,7 @@ const ALERT_BADGE: Record<string, { label: string; className: string }> = {
 };
 
 export default function SimplifiedDashboardPage() {
-  const [showSimulator, setShowSimulator] = useState<boolean>(true);
+  const [showSimulator, setShowSimulator] = useState<boolean>(false);
   const {
     device,
     readings,
@@ -45,6 +45,7 @@ export default function SimplifiedDashboardPage() {
     secondsSinceLastSeen,
     isLoading,
     firestoreConnected,
+    rtdbConnected,
     firestoreError,
     pushFirmwareReading,
     setDeviceStatus,
@@ -53,9 +54,9 @@ export default function SimplifiedDashboardPage() {
   if (isLoading) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-2.5 bg-slate-50 p-8">
-        <progress className="w-48" aria-label="Connecting to Cloud Firestore" />
+        <progress className="w-48" aria-label="Connecting to Firebase" />
         <p className="text-xs font-medium text-slate-500">
-          Listening for ESP32 uploads in Cloud Firestore…
+          Connecting to ESP32 telemetry stream…
         </p>
       </div>
     );
@@ -66,7 +67,7 @@ export default function SimplifiedDashboardPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* Top Header with Live ESP32 Online/Offline Status */}
+      {/* Top Header with Live ESP32 Online/Offline Status (30s Heartbeat Timeout) */}
       <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
         <a
           href="#main-dashboard-heading"
@@ -92,15 +93,15 @@ export default function SimplifiedDashboardPage() {
               <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
                 <Database className="h-3 w-3 text-sky-600" aria-hidden="true" />
                 <span>
-                  {firestoreConnected
-                    ? "Firestore Live (deviceReadings/{uid}/measurements)"
-                    : "Connecting to Firestore…"}
+                  {firestoreConnected && rtdbConnected
+                    ? "RTDB Heartbeat (30s) + Firestore Vitals Live"
+                    : "Connecting to Firebase…"}
                 </span>
               </p>
             </div>
           </div>
 
-          {/* Device Connectivity Status + 60s Heartbeat Timeout + Simulator Toggle */}
+          {/* Device Connectivity Status + 30s Heartbeat Timeout + Simulator Toggle */}
           <div className="flex items-center gap-2.5">
             <div
               role="status"
@@ -132,19 +133,27 @@ export default function SimplifiedDashboardPage() {
                     aria-hidden="true"
                   />
                   <span>
-                    Device Offline{isTimedOut ? " (>60s)" : ""}
+                    Device Offline{isTimedOut ? " (>30s)" : ""}
                   </span>
                 </>
               )}
             </div>
 
-            <div className="hidden items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-[11px] text-slate-600 sm:flex">
-              <Clock
-                className="h-3.5 w-3.5 text-slate-400"
-                aria-hidden="true"
-              />
-              <span>{secondsSinceLastSeen}s ago</span>
-            </div>
+            {secondsSinceLastSeen !== null && (
+              <div className="hidden items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-[11px] text-slate-600 sm:flex">
+                <Clock
+                  className="h-3.5 w-3.5 text-slate-400"
+                  aria-hidden="true"
+                />
+                <span>{secondsSinceLastSeen}s ago</span>
+                {device.uptimeSeconds !== undefined && (
+                  <>
+                    <span className="text-slate-300">•</span>
+                    <span>Up {device.uptimeSeconds}s</span>
+                  </>
+                )}
+              </div>
+            )}
 
             <button
               type="button"
@@ -168,11 +177,10 @@ export default function SimplifiedDashboardPage() {
             role="alert"
             className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900"
           >
-            <strong>Firestore Notice:</strong> {firestoreError}. Deploy{" "}
-            <code>firestore.rules</code> &amp;{" "}
-            <code>firestore.indexes.json</code> with{" "}
+            <strong>Firebase Notice:</strong> {firestoreError}. Deploy rules
+            with{" "}
             <code>
-              npx -y firebase-tools@latest deploy --only firestore:rules,firestore:indexes
+              npx -y firebase-tools@latest deploy --only database,firestore:rules
             </code>
             .
           </div>

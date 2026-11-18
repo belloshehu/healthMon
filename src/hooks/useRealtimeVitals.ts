@@ -8,11 +8,17 @@ import {
   onSnapshot,
   setDoc,
 } from "firebase/firestore";
+import {
+  ref,
+  onValue,
+  update,
+  serverTimestamp,
+} from "firebase/database";
 import { getFirebaseClient } from "@/lib/firebase/client";
 import { VitalAlertLevel, VitalMeasurement } from "@/types/models";
 
 export const DEVICE_ID = "dev_esp32_pti_01";
-export const HEARTBEAT_TIMEOUT_MS = 60_000; // 60-second online timeout
+export const HEARTBEAT_TIMEOUT_MS = 30_000; // 30-second offline timeout matching firmware HEARTBEAT_INTERVAL
 
 export interface FirmwareReading extends VitalMeasurement {
   hasHr: boolean;
@@ -23,9 +29,9 @@ export interface FirmwareReading extends VitalMeasurement {
 
 export interface Esp32DeviceState {
   deviceId: string;
-  serialNumber: string;
   status: "online" | "offline";
   lastSeenMs: number;
+  uptimeSeconds?: number;
   anonymousUid?: string;
 }
 
@@ -66,19 +72,6 @@ function evaluatePartialReadingAlert(reading: {
   return level;
 }
 
-/**
- * Parses a Firestore document written by the ESP32 firmware at:
- * `deviceReadings/{uid}/measurements/{uploadId}`
- *
- * Firmware fields:
- * - deviceId: "dev_esp32_pti_01"
- * - anonymousUid: string
- * - measurementType: "prototype"
- * - uploadedBy: "esp32"
- * - heartRate (int), heartRateEpoch (int seconds)
- * - spo2 (int), spo2Epoch (int seconds)
- * - temperatureC (double), temperatureEpoch (int seconds)
- */
 function parseFirmwareMeasurementDoc(
   docId: string,
   raw: Record<string, unknown>
@@ -95,7 +88,6 @@ function parseFirmwareMeasurementDoc(
   const spo2 = hasSpo2 ? Number(rawSpo2) : 0;
   const temp = hasTemp ? Number(rawTemp) : 0;
 
-  // Firmware sends Unix epoch in seconds (`heartRateEpoch`, `spo2Epoch`, `temperatureEpoch`)
   const epochSec = Math.max(
     Number(raw.heartRateEpoch || 0),
     Number(raw.spo2Epoch || 0),
@@ -147,17 +139,18 @@ function parseFirmwareMeasurementDoc(
 export function useRealtimeVitals() {
   const [device, setDevice] = useState<Esp32DeviceState>({
     deviceId: DEVICE_ID,
-    serialNumber: "ESP32-PTI-001",
-    status: "online",
-    lastSeenMs: Date.now(),
+    status: "offline",
+    lastSeenMs: 0,
   });
   const [readings, setReadings] = useState<FirmwareReading[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [firestoreConnected, setFirestoreConnected] = useState<boolean>(false);
+  const [rtdbConnected, setRtdbConnected] = useState<boolean>(false);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(Date.now());
+  const [serverTimeOffsetMs, setServerTimeOffsetMs] = useState<number>(0);
 
-  // 1-second clock to evaluate the 60-second heartbeat timeout
+  // 1-second clock to evaluate the 30-second heartbeat timeout
   useEffect(() => {
     const timer = setInterval(() => {
       setNowMs(Date.now());
@@ -166,54 +159,62 @@ export function useRealtimeVitals() {
   }, []);
 
   useEffect(() => {
-    const { auth, db } = getFirebaseClient();
+    const { auth, db, rtdb } = getFirebaseClient();
     let unsubMeasurements: (() => void) | undefined;
-    let unsubDevice: (() => void) | undefined;
+    let unsubRtdbDevice: (() => void) | undefined;
+    let unsubOffset: (() => void) | undefined;
     let cancelled = false;
 
     async function subscribe() {
       try {
         if (!auth.currentUser) {
-          await signInAnonymously(auth).catch(() => {
-            // Proceed even if anonymous sign-in is not yet enabled in console
-          });
+          await signInAnonymously(auth).catch(() => {});
         }
         if (cancelled) return;
 
-        // 1. Listen to `/devices/dev_esp32_pti_01` for heartbeat updates
-        const deviceDocRef = doc(db, "devices", DEVICE_ID);
-        unsubDevice = onSnapshot(
-          deviceDocRef,
+        // 1. Track Firebase Realtime Database server clock offset so `.sv: "timestamp"` is compared without local clock skew
+        unsubOffset = onValue(
+          ref(rtdb, ".info/serverTimeOffset"),
           (snap) => {
-            setFirestoreConnected(true);
             if (snap.exists()) {
-              const data = snap.data();
-              const epochSec = Number(data.lastSeenEpoch || 0);
-              const seenMs =
-                epochSec > 1700000000
-                  ? epochSec * 1000
-                  : typeof data.lastSeenAt === "string"
-                  ? new Date(data.lastSeenAt).getTime()
-                  : Date.now();
-
-              setDevice((prev) => ({
-                ...prev,
-                status: data.status === "offline" ? "offline" : "online",
-                lastSeenMs: Math.max(prev.lastSeenMs, seenMs),
-                anonymousUid:
-                  typeof data.anonymousUid === "string"
-                    ? data.anonymousUid
-                    : prev.anonymousUid,
-              }));
+              setServerTimeOffsetMs(Number(snap.val()) || 0);
             }
-          },
-          () => {
-            // Ignore device doc listener errors if rules not deployed yet
           }
         );
 
-        // 2. Listen to `collectionGroup(db, "measurements")` matching the ESP32 firmware path:
-        //    `deviceReadings/{uid}/measurements/{lastUploadId}` without `where()` so no custom COLLECTION_GROUP_ASC index is required
+        // 2. Listen to Firebase Realtime Database `/device` updated every 30s by `sendHeartbeat()` in firmware
+        unsubRtdbDevice = onValue(
+          ref(rtdb, "device"),
+          (snap) => {
+            setRtdbConnected(true);
+            if (snap.exists()) {
+              const val = snap.val();
+              const rawLastSeen = Number(val.lastSeen || 0);
+              // Support both ms (.sv: "timestamp") and seconds
+              const seenMs =
+                rawLastSeen > 0 && rawLastSeen < 10_000_000_000
+                  ? rawLastSeen * 1000
+                  : rawLastSeen;
+
+              setDevice((prev) => ({
+                ...prev,
+                deviceId: val.deviceId || DEVICE_ID,
+                status: val.status === "online" ? "online" : "offline",
+                lastSeenMs: seenMs,
+                uptimeSeconds:
+                  val.uptimeSeconds !== undefined
+                    ? Number(val.uptimeSeconds)
+                    : prev.uptimeSeconds,
+              }));
+              setNowMs(Date.now());
+            }
+          },
+          () => {
+            // Ignore RTDB read error if rules not yet deployed
+          }
+        );
+
+        // 3. Listen to Cloud Firestore `collectionGroup(db, "measurements")` for `uploadReading()` documents
         const measurementsQuery = collectionGroup(db, "measurements");
 
         unsubMeasurements = onSnapshot(
@@ -235,17 +236,6 @@ export function useRealtimeVitals() {
               .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
 
             setReadings(parsed);
-
-            if (parsed.length > 0) {
-              const newestMs = new Date(parsed[0].capturedAt).getTime();
-              if (!Number.isNaN(newestMs)) {
-                setDevice((prev) => ({
-                  ...prev,
-                  lastSeenMs: Math.max(prev.lastSeenMs, newestMs),
-                  anonymousUid: parsed[0].anonymousUid || prev.anonymousUid,
-                }));
-              }
-            }
             setIsLoading(false);
           },
           (err) => {
@@ -255,7 +245,7 @@ export function useRealtimeVitals() {
         );
       } catch (err: unknown) {
         setFirestoreError(
-          err instanceof Error ? err.message : "Failed to connect to Firestore"
+          err instanceof Error ? err.message : "Failed to connect to Firebase"
         );
         setIsLoading(false);
       }
@@ -266,13 +256,13 @@ export function useRealtimeVitals() {
     return () => {
       cancelled = true;
       unsubMeasurements?.();
-      unsubDevice?.();
+      unsubRtdbDevice?.();
+      unsubOffset?.();
     };
   }, []);
 
   /**
-   * Writes a reading using the EXACT same Firestore path and field structure as `uploadReading()` in the ESP32 Arduino sketch:
-   * `deviceReadings/{uid}/measurements/{uploadId}`
+   * Simulates `uploadReading()` (Firestore) + `sendHeartbeat()` (Realtime DB `/device`).
    */
   const pushFirmwareReading = useCallback(
     async (input: {
@@ -280,7 +270,7 @@ export function useRealtimeVitals() {
       spo2?: number;
       temperatureC?: number;
     }) => {
-      const { auth, db } = getFirebaseClient();
+      const { auth, db, rtdb } = getFirebaseClient();
       if (!auth.currentUser) {
         await signInAnonymously(auth).catch(() => {});
       }
@@ -309,7 +299,6 @@ export function useRealtimeVitals() {
         firestorePayload.temperatureEpoch = nowEpochSec;
       }
 
-      // Optimistic UI update
       const optimisticRecord = parseFirmwareMeasurementDoc(
         uploadId,
         firestorePayload
@@ -318,7 +307,7 @@ export function useRealtimeVitals() {
       setDevice((prev) => ({
         ...prev,
         status: "online",
-        lastSeenMs: nowMs,
+        lastSeenMs: nowMs + serverTimeOffsetMs,
         anonymousUid: uid,
       }));
       setNowMs(nowMs);
@@ -329,60 +318,54 @@ export function useRealtimeVitals() {
           firestorePayload,
           { merge: true }
         ),
-        setDoc(
-          doc(db, "devices", DEVICE_ID),
-          {
-            deviceId: DEVICE_ID,
-            anonymousUid: uid,
-            status: "online",
-            lastSeenEpoch: nowEpochSec,
-          },
-          { merge: true }
-        ),
+        update(ref(rtdb, "device"), {
+          deviceId: DEVICE_ID,
+          status: "online",
+          lastSeen: serverTimestamp(),
+        }),
       ]);
     },
-    []
+    [serverTimeOffsetMs]
   );
 
   /**
-   * Updates `/devices/dev_esp32_pti_01` status ("online" | "offline") and `lastSeenEpoch` in Firestore.
+   * Updates `/device` in Firebase Realtime Database matching `sendHeartbeat()` in firmware.
    */
   const setDeviceStatus = useCallback(
     async (nextStatus: "online" | "offline") => {
-      const { auth, db } = getFirebaseClient();
-      const uid = auth.currentUser?.uid || "sim_anon_uid";
+      const { rtdb } = getFirebaseClient();
       const nowMs = Date.now();
-      const nowEpochSec = Math.floor(nowMs / 1000);
 
       setDevice((prev) => ({
         ...prev,
         status: nextStatus,
-        lastSeenMs: nextStatus === "online" ? nowMs : prev.lastSeenMs,
+        lastSeenMs:
+          nextStatus === "online"
+            ? nowMs + serverTimeOffsetMs
+            : prev.lastSeenMs,
       }));
       setNowMs(nowMs);
 
-      await setDoc(
-        doc(db, "devices", DEVICE_ID),
-        {
-          deviceId: DEVICE_ID,
-          anonymousUid: uid,
-          status: nextStatus,
-          ...(nextStatus === "online" ? { lastSeenEpoch: nowEpochSec } : {}),
-        },
-        { merge: true }
-      );
+      await update(ref(rtdb, "device"), {
+        deviceId: DEVICE_ID,
+        status: nextStatus,
+        ...(nextStatus === "online" ? { lastSeen: serverTimestamp() } : {}),
+      });
     },
-    []
+    [serverTimeOffsetMs]
   );
 
-  const secondsSinceLastSeen = Math.max(
-    0,
-    Math.floor((nowMs - device.lastSeenMs) / 1000)
-  );
-  const isTimedOut = nowMs - device.lastSeenMs >= HEARTBEAT_TIMEOUT_MS;
+  const serverNowMs = nowMs + serverTimeOffsetMs;
+  const hasSeenHeartbeat = device.lastSeenMs > 0;
+  const elapsedMs = hasSeenHeartbeat
+    ? Math.max(0, serverNowMs - device.lastSeenMs)
+    : Infinity;
+  const secondsSinceLastSeen = hasSeenHeartbeat
+    ? Math.floor(elapsedMs / 1000)
+    : null;
+  const isTimedOut = !hasSeenHeartbeat || elapsedMs > HEARTBEAT_TIMEOUT_MS;
   const isOnline = device.status === "online" && !isTimedOut;
 
-  // Compute the most recent valid value for each of the 3 parameters (supporting partial uploads!)
   const latestHrReading = readings.find((r) => r.hasHr);
   const latestSpo2Reading = readings.find((r) => r.hasSpo2);
   const latestTempReading = readings.find((r) => r.hasTemp);
@@ -398,6 +381,7 @@ export function useRealtimeVitals() {
     secondsSinceLastSeen,
     isLoading,
     firestoreConnected,
+    rtdbConnected,
     firestoreError,
     pushFirmwareReading,
     setDeviceStatus,

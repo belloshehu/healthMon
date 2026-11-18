@@ -16,6 +16,7 @@ const char* WIFI_SSID = "MTN_4G_854DDB";
 const char* WIFI_PASSWORD = "Sfulani@";
 const char* FIREBASE_API_KEY = "AIzaSyCyANuP3SgrjeAgl_GYf2tgMJYgo1ZVVZ8";
 const char* FIREBASE_PROJECT_ID = "safecrowdai-f5d43";
+const char* FIREBASE_RTDB_URL = "https://safecrowdai-f5d43-default-rtdb.firebaseio.com";
 const char* DEVICE_ID = "dev_esp32_pti_01";
 // WARNING: Prototype only. Replace setInsecure() with certificate validation before real deployment.
 
@@ -23,7 +24,8 @@ constexpr uint8_t PIN_SDA = 21, PIN_SCL = 22;
 constexpr uint8_t PIN_NEXT = 25, PIN_CAPTURE = 26, PIN_UPLOAD = 27;
 constexpr uint8_t MAX_SAMPLES = 100;
 constexpr uint32_t DEBOUNCE_MS = 45;
-constexpr uint32_t HEARTBEAT_INTERVAL_MS = 30000UL; // 30-second online status heartbeat
+const unsigned long HEARTBEAT_INTERVAL = 30000;
+unsigned long lastHeartbeatAttempt = 0;
 
 // Initialize U8g2 for the ST7567S display
 constexpr uint8_t LCD_SCL = 18;
@@ -70,7 +72,6 @@ Button btnNext{PIN_NEXT}, btnCapture{PIN_CAPTURE}, btnUpload{PIN_UPLOAD};
 String uid, idToken, refreshToken;
 uint32_t tokenIssuedAt = 0;
 uint32_t tokenExpiresSec = 0;
-uint32_t lastHeartbeatAt = 0;
 String statusLine = "Starting...";
 String lastUploadId;
 
@@ -221,41 +222,75 @@ bool ensureAuth() {
   return signInAnonymously();
 }
 
-void addIntField(JsonObject fields, const char* key, int32_t value) {
-  fields[key]["integerValue"] = String(value);
-}
-void addDoubleField(JsonObject fields, const char* key, double value) {
-  fields[key]["doubleValue"] = value;
-}
-void addStringField(JsonObject fields, const char* key, const String& value) {
-  fields[key]["stringValue"] = value;
-}
-
-// Lightweight 30-second heartbeat so the web dashboard shows live Online/Offline status
 bool sendHeartbeat() {
-  if (WiFi.status() != WL_CONNECTED) return false;
-  if (!ensureAuth()) return false;
-  uint32_t nowSec = epochNow();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Heartbeat skipped: WiFi disconnected");
+    return false;
+  }
+
+  if (!ensureAuth()) {
+    Serial.println("Heartbeat failed: Firebase authentication");
+    return false;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure(); // Prototype only; use CA validation in production.
+
+  HTTPClient http;
+
+  String url = String(FIREBASE_RTDB_URL) +
+               "/device.json?auth=" + idToken;
+
+  if (!http.begin(client, url)) {
+    return false;
+  }
+
+  http.setTimeout(12000);
+  http.addHeader("Content-Type", "application/json");
+
   JsonDocument doc;
-  JsonObject fields = doc["fields"].to<JsonObject>();
-  addStringField(fields, "deviceId", DEVICE_ID);
-  addStringField(fields, "anonymousUid", uid);
-  addStringField(fields, "status", "online");
-  if (nowSec > 0) addIntField(fields, "lastSeenEpoch", nowSec);
+
+  doc["deviceId"] = DEVICE_ID;
+  doc["status"] = "online";
+  doc["lastSeen"][".sv"] = "timestamp";
+  doc["uptimeSeconds"] = millis() / 1000;
+
   String payload;
   serializeJson(doc, payload);
 
-  String url = String("https://firestore.googleapis.com/v1/projects/") + FIREBASE_PROJECT_ID + "/databases/(default)/documents/devices/" + DEVICE_ID;
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  if (!http.begin(client, url)) return false;
-  http.setTimeout(8000);
-  http.addHeader("Authorization", "Bearer " + idToken);
-  http.addHeader("Content-Type", "application/json");
+  // PATCH preserves other fields in /device.
   int code = http.sendRequest("PATCH", payload);
+
+  String response = http.getString();
   http.end();
-  return code == 200;
+
+  if (code == 200) {
+    Serial.println("Heartbeat sent successfully");
+    return true;
+  }
+
+  Serial.printf(
+    "Heartbeat failed: HTTP %d: %s\n",
+    code,
+    response.c_str()
+  );
+
+  return false;
+}
+
+void handleHeartbeat() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  unsigned long now = millis();
+
+  if (lastHeartbeatAttempt == 0 ||
+      now - lastHeartbeatAttempt >= HEARTBEAT_INTERVAL) {
+
+    lastHeartbeatAttempt = now;
+    sendHeartbeat();
+  }
 }
 
 bool capturePulse() {
@@ -354,6 +389,16 @@ bool captureTemperature() {
   return true;
 }
 
+void addIntField(JsonObject fields, const char* key, int32_t value) {
+  fields[key]["integerValue"] = String(value);
+}
+void addDoubleField(JsonObject fields, const char* key, double value) {
+  fields[key]["doubleValue"] = value;
+}
+void addStringField(JsonObject fields, const char* key, const String& value) {
+  fields[key]["stringValue"] = value;
+}
+
 bool uploadReading() {
   if (!reading.hrValid && !reading.spo2Valid && !reading.tempValid) { setStatus("Nothing to upload"); return false; }
   if (WiFi.status() != WL_CONNECTED) { setStatus("WiFi unavailable"); return false; }
@@ -393,7 +438,6 @@ bool uploadReading() {
     lastUploadId = "";
     prefs.remove("uploadId");
     sendHeartbeat();
-    lastHeartbeatAt = millis();
     setStatus("Upload successful");
     return true;
   }
@@ -421,7 +465,6 @@ void setup() {
 
   setStatus("Initializing...");
 
-  // Fixed: assign to global `mlxReady` without shadowing it with a local variable
   mlxReady = mlx.begin(0x5A, &Wire);
   if (mlxReady) {
     Serial.println("MLX90614 initialized successfully");
@@ -450,8 +493,6 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) delay(200);
   if (WiFi.status() == WL_CONNECTED) {
     configTime(0, 0, "pool.ntp.org", "time.google.com");
-    sendHeartbeat();
-    lastHeartbeatAt = millis();
     setStatus("Ready - WiFi OK");
   } else setStatus("Offline - can capture");
 }
@@ -469,10 +510,6 @@ void loop() {
   }
   if (btnUpload.pressed()) uploadReading();
 
-  // Periodic 30-second heartbeat when Wi-Fi is connected
-  if (WiFi.status() == WL_CONNECTED && (uint32_t)(millis() - lastHeartbeatAt) >= HEARTBEAT_INTERVAL_MS) {
-    lastHeartbeatAt = millis();
-    sendHeartbeat();
-  }
+  handleHeartbeat();
   delay(10);
 }
