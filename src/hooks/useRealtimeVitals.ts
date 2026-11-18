@@ -6,9 +6,7 @@ import {
   collectionGroup,
   doc,
   onSnapshot,
-  query,
   setDoc,
-  where,
 } from "firebase/firestore";
 import { getFirebaseClient } from "@/lib/firebase/client";
 import { VitalAlertLevel, VitalMeasurement } from "@/types/models";
@@ -215,11 +213,8 @@ export function useRealtimeVitals() {
         );
 
         // 2. Listen to `collectionGroup(db, "measurements")` matching the ESP32 firmware path:
-        //    `deviceReadings/{uid}/measurements/{lastUploadId}` where `deviceId == "dev_esp32_pti_01"`
-        const measurementsQuery = query(
-          collectionGroup(db, "measurements"),
-          where("deviceId", "==", DEVICE_ID)
-        );
+        //    `deviceReadings/{uid}/measurements/{lastUploadId}` without `where()` so no custom COLLECTION_GROUP_ASC index is required
+        const measurementsQuery = collectionGroup(db, "measurements");
 
         unsubMeasurements = onSnapshot(
           measurementsQuery,
@@ -227,6 +222,10 @@ export function useRealtimeVitals() {
             setFirestoreConnected(true);
             setFirestoreError(null);
             const parsed = snapshot.docs
+              .filter((d) => {
+                const docDeviceId = d.data()?.deviceId;
+                return !docDeviceId || docDeviceId === DEVICE_ID;
+              })
               .map((d) =>
                 parseFirmwareMeasurementDoc(
                   d.id,
