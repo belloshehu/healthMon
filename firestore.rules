@@ -1,0 +1,653 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// This security rules file enforces single-clinic isolation for
+// PTI Clinic (hospitalId == 'hosp_pti_clinic'), role-based access
+// control (RBAC), Nigeria Data Protection Act (NDPA) compliance,
+// and anti-tampering / anti-reassignment invariants for the
+// HealthOS IoT Hospital Health Monitoring Platform.
+//
+// Collection: hospitals/{hospitalId}
+// Document ID: must be 'hosp_pti_clinic'
+// Fields:
+//   - name: string (required, 1..150 chars)
+//   - code: string (required, 2..30 chars)
+//   - state: string (required, 1..60 chars)
+//   - lga: string (required, 1..80 chars)
+//   - address: string (required, 1..300 chars)
+//   - ndpaDpoEmail: string (required, 3..150 chars, valid email)
+//   - retentionDays: int (required, 30..3650)
+//   - alertThresholds: map (required, max 20 keys)
+//   - active: bool (required)
+//   - createdAt: timestamp (required, immutable)
+//   - updatedAt: timestamp (required)
+//
+// Collection: users/{userId}
+// Fields:
+//   - uid: string (required, == userId, immutable)
+//   - email: string (required, 3..150 chars, valid email, immutable for self)
+//   - displayName: string (required, 1..120 chars)
+//   - role: string (required, in ['super_admin', 'hospital_admin', 'doctor', 'nurse', 'device_operator'], immutable for self)
+//   - primaryHospitalId: string (required, == 'hosp_pti_clinic', immutable for self)
+//   - active: bool (required, immutable for self)
+//   - createdAt: timestamp (required, immutable)
+//   - updatedAt: timestamp (required)
+//
+// Collection: hospitalMembers/{memberId}
+// Deterministic ID: hosp_pti_clinic_{userId}
+// Fields:
+//   - hospitalId: string (required, == 'hosp_pti_clinic', immutable)
+//   - userId: string (required, 1..128 chars, immutable)
+//   - role: string (required, in ['super_admin', 'hospital_admin', 'doctor', 'nurse', 'device_operator'])
+//   - department: string (required, 1..100 chars)
+//   - active: bool (required)
+//   - assignedBy: string (required, 1..128 chars)
+//   - createdAt: timestamp (required, immutable)
+//   - updatedAt: timestamp (required)
+//
+// Collection: patients/{patientId}
+// Fields:
+//   - hospitalId: string (required, == 'hosp_pti_clinic', immutable)
+//   - patientCode: string (required, 6-digit numeric ^[0-9]{6}$, immutable)
+//   - fullName: string (required, 1..150 chars)
+//   - dateOfBirth: string (required, 4..30 chars)
+//   - sex: string (required, in ['male', 'female', 'other'])
+//   - ward: string (required, 1..80 chars)
+//   - bedNumber: string (required, 1..30 chars)
+//   - assignedDoctorId: string (required, 1..128 chars)
+//   - assignedNurseId: string (required, 1..128 chars)
+//   - status: string (required, in ['stable', 'attention', 'critical', 'discharged'])
+//   - consentRecorded: bool (required, must be true for NDPA compliance)
+//   - createdAt: timestamp (required, immutable)
+//   - updatedAt: timestamp (required)
+//   - createdBy: string (required, 1..128 chars, immutable)
+//
+// Collection: devices/{deviceId}
+// Fields:
+//   - deviceId: string (required, == deviceId, immutable)
+//   - serialNumber: string (required, 3..80 chars, immutable)
+//   - hospitalId: string (required, == 'hosp_pti_clinic', immutable)
+//   - name: string (required, 1..120 chars)
+//   - ward: string (required, 1..80 chars)
+//   - firmwareVersion: string (required, 1..40 chars)
+//   - status: string (required, in ['active', 'inactive', 'maintenance', 'revoked'])
+//   - connectionStatus: string (required, in ['online', 'offline', 'degraded'])
+//   - lastSeenAt: timestamp (required)
+//   - createdAt: timestamp (required, immutable)
+//   - updatedAt: timestamp (required)
+//
+// Collection: measurementSessions/{sessionId}
+// Fields:
+//   - sessionId: string (required, == sessionId, immutable)
+//   - hospitalId: string (required, == 'hosp_pti_clinic', immutable)
+//   - patientId: string (required, 1..128 chars, immutable)
+//   - patientCode: string (required, ^[0-9]{6}$, immutable)
+//   - deviceId: string (required, 1..128 chars, immutable)
+//   - operatorId: string (required, 1..128 chars, immutable)
+//   - status: string (required, in ['authorized', 'capturing', 'completed', 'expired', 'cancelled'])
+//   - createdAt: timestamp (required, immutable)
+//   - expiresAt: timestamp (required, immutable)
+//   - completedAt: timestamp (optional)
+//
+// Collection: measurements/{measurementId}
+// Fields:
+//   - measurementId: string (required, == measurementId, immutable)
+//   - hospitalId: string (required, == 'hosp_pti_clinic', immutable)
+//   - patientId: string (required, 1..128 chars, immutable)
+//   - sessionId: string (required, 1..128 chars, immutable)
+//   - deviceId: string (required, 1..128 chars, immutable)
+//   - heartRateBpm: number (required, 20..260, immutable)
+//   - spo2Pct: number (required, 50..100, immutable)
+//   - surfaceTempC: number (required, 25..45, immutable)
+//   - tempSensorType: string (required, == 'MLX90614_SURFACE_IR', immutable)
+//   - opticalSensorType: string (required, == 'MAX30102_PROTOTYPE', immutable)
+//   - capturedAt: timestamp (required, immutable)
+//   - uploadedAt: timestamp (required, immutable)
+//   - syncStatus: string (required, in ['verified_online', 'pending_offline', 'verified_offline', 'rejected'])
+//   - validityStatus: string (required, in ['valid', 'artifact_suspected', 'uncalibrated_warning'])
+//   - alertLevel: string (required, in ['normal', 'warning', 'high_priority'], immutable)
+//   - createdAt: timestamp (required, immutable)
+//
+// Collection: auditLogs/{logId}
+// Fields:
+//   - hospitalId: string (required, == 'hosp_pti_clinic')
+//   - actorUid: string (required, 1..128 chars)
+//   - actorRole: string (required, 1..50 chars)
+//   - action: string (required, 1..120 chars)
+//   - targetCollection: string (required, 1..80 chars)
+//   - targetId: string (required, 1..128 chars)
+//   - metadata: map (required, max 50 keys)
+//   - createdAt: timestamp (required)
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Enforce single-clinic restriction: PTI Clinic only
+    function isPtiClinic(hospitalId) {
+      return hospitalId == 'hosp_pti_clinic';
+    }
+
+    // Reject unauthenticated and anonymous authentication requests
+    function isNonAnonymous() {
+      return !('firebase' in request.auth.token) ||
+             !('sign_in_provider' in request.auth.token.firebase) ||
+             request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    function isAuthenticated() {
+      return request.auth != null &&
+             request.auth.uid is string &&
+             request.auth.uid.size() >= 1 &&
+             isNonAnonymous();
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasRequiredFields(data, fields) {
+      return data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(data, fields) {
+      return data.keys().hasOnly(fields);
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+             email.size() >= 3 &&
+             email.size() <= 150 &&
+             email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidPatientCode(code) {
+      return code is string &&
+             code.size() == 6 &&
+             code.matches("^[0-9]{6}$");
+    }
+
+    function isValidRole(role) {
+      return role in ['super_admin', 'hospital_admin', 'doctor', 'nurse', 'device_operator'];
+    }
+
+    // Check if the caller is a platform super_admin via custom claims or active user profile
+    function isSuperAdmin() {
+      let userDocPath = /databases/$(database)/documents/users/$(request.auth.uid);
+      return isAuthenticated() && (
+        ('role' in request.auth.token && request.auth.token.role == 'super_admin') ||
+        (exists(userDocPath) &&
+         get(userDocPath).data.active == true &&
+         get(userDocPath).data.role == 'super_admin' &&
+         isPtiClinic(get(userDocPath).data.primaryHospitalId))
+      );
+    }
+
+    // Deterministic hospital membership document path
+    function memberDocPath(hospitalId) {
+      return /databases/$(database)/documents/hospitalMembers/$(hospitalId + '_' + request.auth.uid);
+    }
+
+    // Verify active hospital membership in hospitalMembers/{hospitalId}_{uid} for PTI Clinic
+    function isActiveHospitalMember(hospitalId) {
+      return isAuthenticated() &&
+             isPtiClinic(hospitalId) &&
+             exists(memberDocPath(hospitalId)) &&
+             get(memberDocPath(hospitalId)).data.active == true &&
+             get(memberDocPath(hospitalId)).data.hospitalId == hospitalId &&
+             get(memberDocPath(hospitalId)).data.userId == request.auth.uid;
+    }
+
+    // Verify active hospital membership with specific allowed roles
+    function hasHospitalRole(hospitalId, allowedRoles) {
+      return isPtiClinic(hospitalId) &&
+             isActiveHospitalMember(hospitalId) &&
+             get(memberDocPath(hospitalId)).data.role in allowedRoles;
+    }
+
+    function isHospitalAdmin(hospitalId) {
+      return isPtiClinic(hospitalId) &&
+             hasHospitalRole(hospitalId, ['hospital_admin', 'super_admin']);
+    }
+
+    // ===============================================================
+    // Domain Validators (Used in BOTH create and update)
+    // ===============================================================
+
+    function isValidHospital(data, hospitalId) {
+      let required = [
+        'name', 'code', 'state', 'lga', 'address',
+        'ndpaDpoEmail', 'retentionDays', 'alertThresholds',
+        'active', 'createdAt', 'updatedAt'
+      ];
+      let allowed = [
+        'id', 'hospitalId', 'name', 'code', 'state', 'lga', 'address',
+        'ndpaDpoEmail', 'retentionDays', 'alertThresholds',
+        'active', 'createdAt', 'updatedAt'
+      ];
+      return isPtiClinic(hospitalId) &&
+             hasRequiredFields(data, required) &&
+             hasOnlyAllowedFields(data, allowed) &&
+             (!('id' in data) || (data.id == hospitalId && isPtiClinic(data.id))) &&
+             (!('hospitalId' in data) || (data.hospitalId == hospitalId && isPtiClinic(data.hospitalId))) &&
+             isValidString(data.name, 1, 150) &&
+             isValidString(data.code, 2, 30) &&
+             isValidString(data.state, 1, 60) &&
+             isValidString(data.lga, 1, 80) &&
+             isValidString(data.address, 1, 300) &&
+             isValidEmail(data.ndpaDpoEmail) &&
+             data.retentionDays is int &&
+             data.retentionDays >= 30 &&
+             data.retentionDays <= 3650 &&
+             data.alertThresholds is map &&
+             data.alertThresholds.size() <= 20 &&
+             data.active is bool &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidUser(data, userId) {
+      let fields = [
+        'uid', 'email', 'displayName', 'role',
+        'primaryHospitalId', 'active', 'createdAt', 'updatedAt'
+      ];
+      return hasRequiredFields(data, fields) &&
+             hasOnlyAllowedFields(data, fields) &&
+             data.uid is string &&
+             data.uid == userId &&
+             isValidEmail(data.email) &&
+             isValidString(data.displayName, 1, 120) &&
+             isValidRole(data.role) &&
+             isValidString(data.primaryHospitalId, 1, 100) &&
+             isPtiClinic(data.primaryHospitalId) &&
+             data.active is bool &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidHospitalMember(data, memberId) {
+      let fields = [
+        'hospitalId', 'userId', 'role', 'department',
+        'active', 'assignedBy', 'createdAt', 'updatedAt'
+      ];
+      return hasRequiredFields(data, fields) &&
+             hasOnlyAllowedFields(data, fields) &&
+             isValidString(data.hospitalId, 1, 100) &&
+             isPtiClinic(data.hospitalId) &&
+             isValidString(data.userId, 1, 128) &&
+             memberId == ('hosp_pti_clinic_' + data.userId) &&
+             memberId == (data.hospitalId + '_' + data.userId) &&
+             isValidRole(data.role) &&
+             isValidString(data.department, 1, 100) &&
+             data.active is bool &&
+             isValidString(data.assignedBy, 1, 128) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidPatient(data, patientId) {
+      let required = [
+        'hospitalId', 'patientCode', 'fullName', 'dateOfBirth',
+        'sex', 'ward', 'bedNumber', 'assignedDoctorId', 'assignedNurseId',
+        'status', 'consentRecorded', 'createdAt', 'updatedAt', 'createdBy'
+      ];
+      let allowed = [
+        'id', 'patientId', 'hospitalId', 'patientCode', 'fullName', 'dateOfBirth',
+        'sex', 'ward', 'bedNumber', 'assignedDoctorId', 'assignedNurseId',
+        'status', 'consentRecorded', 'createdAt', 'updatedAt', 'createdBy'
+      ];
+      return hasRequiredFields(data, required) &&
+             hasOnlyAllowedFields(data, allowed) &&
+             (!('id' in data) || data.id == patientId) &&
+             (!('patientId' in data) || data.patientId == patientId) &&
+             isValidString(data.hospitalId, 1, 100) &&
+             isPtiClinic(data.hospitalId) &&
+             isValidPatientCode(data.patientCode) &&
+             isValidString(data.fullName, 1, 150) &&
+             isValidString(data.dateOfBirth, 4, 30) &&
+             data.sex in ['male', 'female', 'other'] &&
+             isValidString(data.ward, 1, 80) &&
+             isValidString(data.bedNumber, 1, 30) &&
+             isValidString(data.assignedDoctorId, 1, 128) &&
+             isValidString(data.assignedNurseId, 1, 128) &&
+             data.status in ['stable', 'attention', 'critical', 'discharged'] &&
+             data.consentRecorded is bool &&
+             data.consentRecorded == true &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp &&
+             isValidString(data.createdBy, 1, 128);
+    }
+
+    function isValidDevice(data, deviceId) {
+      let fields = [
+        'deviceId', 'serialNumber', 'hospitalId', 'name', 'ward',
+        'firmwareVersion', 'status', 'connectionStatus',
+        'lastSeenAt', 'createdAt', 'updatedAt'
+      ];
+      return hasRequiredFields(data, fields) &&
+             hasOnlyAllowedFields(data, fields) &&
+             data.deviceId is string &&
+             data.deviceId == deviceId &&
+             isValidString(data.serialNumber, 3, 80) &&
+             isValidString(data.hospitalId, 1, 100) &&
+             isPtiClinic(data.hospitalId) &&
+             isValidString(data.name, 1, 120) &&
+             isValidString(data.ward, 1, 80) &&
+             isValidString(data.firmwareVersion, 1, 40) &&
+             data.status in ['active', 'inactive', 'maintenance', 'revoked'] &&
+             data.connectionStatus in ['online', 'offline', 'degraded'] &&
+             data.lastSeenAt is timestamp &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidMeasurementSession(data, sessionId) {
+      let required = [
+        'sessionId', 'hospitalId', 'patientId', 'patientCode',
+        'deviceId', 'operatorId', 'status', 'createdAt', 'expiresAt'
+      ];
+      let allowed = [
+        'sessionId', 'hospitalId', 'patientId', 'patientCode',
+        'deviceId', 'operatorId', 'status', 'createdAt', 'expiresAt', 'completedAt'
+      ];
+      return hasRequiredFields(data, required) &&
+             hasOnlyAllowedFields(data, allowed) &&
+             data.sessionId is string &&
+             data.sessionId == sessionId &&
+             isValidString(data.hospitalId, 1, 100) &&
+             isPtiClinic(data.hospitalId) &&
+             isValidString(data.patientId, 1, 128) &&
+             isValidPatientCode(data.patientCode) &&
+             isValidString(data.deviceId, 1, 128) &&
+             isValidString(data.operatorId, 1, 128) &&
+             data.status in ['authorized', 'capturing', 'completed', 'expired', 'cancelled'] &&
+             data.createdAt is timestamp &&
+             data.expiresAt is timestamp &&
+             (!('completedAt' in data) || data.completedAt == null || data.completedAt is timestamp);
+    }
+
+    function isValidMeasurement(data, measurementId) {
+      let required = [
+        'measurementId', 'hospitalId', 'patientId', 'sessionId', 'deviceId',
+        'heartRateBpm', 'spo2Pct', 'surfaceTempC', 'tempSensorType', 'opticalSensorType',
+        'capturedAt', 'uploadedAt', 'syncStatus', 'validityStatus', 'alertLevel', 'createdAt'
+      ];
+      let allowed = [
+        'measurementId', 'hospitalId', 'patientId', 'sessionId', 'deviceId',
+        'heartRateBpm', 'spo2Pct', 'surfaceTempC', 'tempSensorType', 'opticalSensorType',
+        'capturedAt', 'uploadedAt', 'syncStatus', 'validityStatus', 'alertLevel', 'createdAt',
+        'verifiedBy', 'verifiedAt', 'updatedAt'
+      ];
+      return hasRequiredFields(data, required) &&
+             hasOnlyAllowedFields(data, allowed) &&
+             data.measurementId is string &&
+             data.measurementId == measurementId &&
+             isValidString(data.hospitalId, 1, 100) &&
+             isPtiClinic(data.hospitalId) &&
+             isValidString(data.patientId, 1, 128) &&
+             isValidString(data.sessionId, 1, 128) &&
+             isValidString(data.deviceId, 1, 128) &&
+             data.heartRateBpm is number &&
+             data.heartRateBpm >= 20 &&
+             data.heartRateBpm <= 260 &&
+             data.spo2Pct is number &&
+             data.spo2Pct >= 50 &&
+             data.spo2Pct <= 100 &&
+             data.surfaceTempC is number &&
+             data.surfaceTempC >= 25 &&
+             data.surfaceTempC <= 45 &&
+             data.tempSensorType == 'MLX90614_SURFACE_IR' &&
+             data.opticalSensorType == 'MAX30102_PROTOTYPE' &&
+             data.capturedAt is timestamp &&
+             data.uploadedAt is timestamp &&
+             data.syncStatus in ['verified_online', 'pending_offline', 'verified_offline', 'rejected'] &&
+             data.validityStatus in ['valid', 'artifact_suspected', 'uncalibrated_warning'] &&
+             data.alertLevel in ['normal', 'warning', 'high_priority'] &&
+             data.createdAt is timestamp &&
+             (!('verifiedBy' in data) || isValidString(data.verifiedBy, 1, 128)) &&
+             (!('verifiedAt' in data) || data.verifiedAt is timestamp) &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // 1. hospitals/{hospitalId} (PTI Clinic only: hospitalId == 'hosp_pti_clinic')
+    match /hospitals/{hospitalId} {
+      allow read: if isPtiClinic(hospitalId) &&
+                     (isSuperAdmin() || isActiveHospitalMember('hosp_pti_clinic'));
+
+      // Disallow creating additional hospital documents since only PTI Clinic is supported
+      allow create: if false;
+
+      allow update: if isPtiClinic(hospitalId) &&
+                       (isSuperAdmin() || isHospitalAdmin('hosp_pti_clinic')) &&
+                       isValidHospital(request.resource.data, hospitalId) &&
+                       request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if false;
+    }
+
+    // 2. users/{userId}
+    match /users/{userId} {
+      allow read: if isPtiClinic(resource.data.primaryHospitalId) && (
+                     isOwner(userId) ||
+                     isSuperAdmin() ||
+                     isActiveHospitalMember('hosp_pti_clinic')
+                  );
+
+      allow create: if isSuperAdmin() &&
+                       isPtiClinic(request.resource.data.primaryHospitalId) &&
+                       isValidUser(request.resource.data, userId);
+
+      allow update: if isPtiClinic(resource.data.primaryHospitalId) &&
+                       isPtiClinic(request.resource.data.primaryHospitalId) &&
+                       isValidUser(request.resource.data, userId) &&
+                       request.resource.data.uid == resource.data.uid &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       (
+                         isSuperAdmin() ||
+                         (
+                           isOwner(userId) &&
+                           resource.data.active == true &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'updatedAt']) &&
+                           request.resource.data.role == resource.data.role &&
+                           request.resource.data.email == resource.data.email &&
+                           request.resource.data.primaryHospitalId == resource.data.primaryHospitalId &&
+                           request.resource.data.active == resource.data.active
+                         )
+                       );
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // 3. hospitalMembers/{memberId}
+    match /hospitalMembers/{memberId} {
+      allow read: if isAuthenticated() &&
+                     isPtiClinic(resource.data.hospitalId) && (
+                     resource.data.userId == request.auth.uid ||
+                     isSuperAdmin() ||
+                     isActiveHospitalMember('hosp_pti_clinic')
+                  );
+
+      allow create: if isPtiClinic(request.resource.data.hospitalId) &&
+                       isValidHospitalMember(request.resource.data, memberId) &&
+                       (
+                         isSuperAdmin() ||
+                         (
+                           isHospitalAdmin('hosp_pti_clinic') &&
+                           request.resource.data.role != 'super_admin' &&
+                           request.resource.data.assignedBy == request.auth.uid
+                         )
+                       );
+
+      allow update: if isPtiClinic(resource.data.hospitalId) &&
+                       isPtiClinic(request.resource.data.hospitalId) &&
+                       isValidHospitalMember(request.resource.data, memberId) &&
+                       request.resource.data.hospitalId == resource.data.hospitalId &&
+                       request.resource.data.userId == resource.data.userId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       (
+                         isSuperAdmin() ||
+                         (
+                           isHospitalAdmin('hosp_pti_clinic') &&
+                           resource.data.role != 'super_admin' &&
+                           request.resource.data.role != 'super_admin'
+                         )
+                       );
+
+      allow delete: if false;
+    }
+
+    // 4. patients/{patientId}
+    match /patients/{patientId} {
+      allow read: if isPtiClinic(resource.data.hospitalId) && (
+                     isSuperAdmin() ||
+                     hasHospitalRole('hosp_pti_clinic', ['hospital_admin', 'doctor', 'nurse', 'device_operator'])
+                  );
+
+      allow create: if isPtiClinic(request.resource.data.hospitalId) &&
+                       (isSuperAdmin() || hasHospitalRole('hosp_pti_clinic', ['hospital_admin', 'nurse', 'doctor'])) &&
+                       request.resource.data.createdBy == request.auth.uid &&
+                       isValidPatient(request.resource.data, patientId);
+
+      allow update: if isPtiClinic(resource.data.hospitalId) &&
+                       isPtiClinic(request.resource.data.hospitalId) &&
+                       (isSuperAdmin() || hasHospitalRole('hosp_pti_clinic', ['hospital_admin', 'nurse', 'doctor'])) &&
+                       isValidPatient(request.resource.data, patientId) &&
+                       request.resource.data.hospitalId == resource.data.hospitalId &&
+                       request.resource.data.patientCode == resource.data.patientCode &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.createdBy == resource.data.createdBy;
+
+      allow delete: if false;
+    }
+
+    // 5. devices/{deviceId}
+    match /devices/{deviceId} {
+      allow read: if isPtiClinic(resource.data.hospitalId) && (
+                     isSuperAdmin() ||
+                     isActiveHospitalMember('hosp_pti_clinic')
+                  );
+
+      allow create: if isPtiClinic(request.resource.data.hospitalId) &&
+                       (isSuperAdmin() || isHospitalAdmin('hosp_pti_clinic')) &&
+                       isValidDevice(request.resource.data, deviceId);
+
+      allow update: if isPtiClinic(resource.data.hospitalId) &&
+                       isPtiClinic(request.resource.data.hospitalId) &&
+                       isValidDevice(request.resource.data, deviceId) &&
+                       request.resource.data.deviceId == resource.data.deviceId &&
+                       request.resource.data.hospitalId == resource.data.hospitalId &&
+                       request.resource.data.serialNumber == resource.data.serialNumber &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       (
+                         isSuperAdmin() ||
+                         isHospitalAdmin('hosp_pti_clinic') ||
+                         (
+                           hasHospitalRole('hosp_pti_clinic', ['device_operator']) &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ward', 'status', 'updatedAt']) &&
+                           request.resource.data.status in ['active', 'inactive', 'maintenance']
+                         )
+                       );
+
+      allow delete: if false;
+    }
+
+    // 6. measurementSessions/{sessionId}
+    match /measurementSessions/{sessionId} {
+      allow read: if isPtiClinic(resource.data.hospitalId) && (
+                     isSuperAdmin() ||
+                     isActiveHospitalMember('hosp_pti_clinic')
+                  );
+
+      allow create: if isPtiClinic(request.resource.data.hospitalId) &&
+                       (isSuperAdmin() || hasHospitalRole('hosp_pti_clinic', ['hospital_admin', 'nurse', 'doctor', 'device_operator'])) &&
+                       request.resource.data.operatorId == request.auth.uid &&
+                       isValidMeasurementSession(request.resource.data, sessionId);
+
+      allow update: if isPtiClinic(resource.data.hospitalId) &&
+                       isPtiClinic(request.resource.data.hospitalId) &&
+                       (isSuperAdmin() || hasHospitalRole('hosp_pti_clinic', ['hospital_admin', 'nurse', 'doctor', 'device_operator'])) &&
+                       isValidMeasurementSession(request.resource.data, sessionId) &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'completedAt']) &&
+                       request.resource.data.sessionId == resource.data.sessionId &&
+                       request.resource.data.hospitalId == resource.data.hospitalId &&
+                       request.resource.data.patientId == resource.data.patientId &&
+                       request.resource.data.patientCode == resource.data.patientCode &&
+                       request.resource.data.deviceId == resource.data.deviceId &&
+                       request.resource.data.operatorId == resource.data.operatorId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.expiresAt == resource.data.expiresAt;
+
+      allow delete: if false;
+    }
+
+    // 7. measurements/{measurementId}
+    match /measurements/{measurementId} {
+      allow read: if isPtiClinic(resource.data.hospitalId) && (
+                     isSuperAdmin() ||
+                     isActiveHospitalMember('hosp_pti_clinic')
+                  );
+
+      // Measurements are created exclusively by trusted Cloud Functions / Admin SDK
+      allow create: if false;
+
+      // Clinical staff can only verify or reject pending_offline measurements;
+      // patientId, hospitalId, sessionId, deviceId, and vital signs are strictly immutable.
+      allow update: if isPtiClinic(resource.data.hospitalId) &&
+                       isPtiClinic(request.resource.data.hospitalId) &&
+                       (isSuperAdmin() || hasHospitalRole('hosp_pti_clinic', ['hospital_admin', 'doctor', 'nurse'])) &&
+                       isValidMeasurement(request.resource.data, measurementId) &&
+                       resource.data.syncStatus == 'pending_offline' &&
+                       request.resource.data.syncStatus in ['verified_offline', 'rejected'] &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'syncStatus', 'validityStatus', 'verifiedBy', 'verifiedAt', 'updatedAt'
+                       ]) &&
+                       request.resource.data.measurementId == resource.data.measurementId &&
+                       request.resource.data.hospitalId == resource.data.hospitalId &&
+                       request.resource.data.patientId == resource.data.patientId &&
+                       request.resource.data.sessionId == resource.data.sessionId &&
+                       request.resource.data.deviceId == resource.data.deviceId &&
+                       request.resource.data.heartRateBpm == resource.data.heartRateBpm &&
+                       request.resource.data.spo2Pct == resource.data.spo2Pct &&
+                       request.resource.data.surfaceTempC == resource.data.surfaceTempC &&
+                       request.resource.data.tempSensorType == resource.data.tempSensorType &&
+                       request.resource.data.opticalSensorType == resource.data.opticalSensorType &&
+                       request.resource.data.capturedAt == resource.data.capturedAt &&
+                       request.resource.data.uploadedAt == resource.data.uploadedAt &&
+                       request.resource.data.alertLevel == resource.data.alertLevel &&
+                       request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if false;
+    }
+
+    // 8. auditLogs/{logId}
+    match /auditLogs/{logId} {
+      allow read: if isPtiClinic(resource.data.hospitalId) && (
+                     isSuperAdmin() ||
+                     isHospitalAdmin('hosp_pti_clinic')
+                  );
+
+      // Audit logs are tamper-proof and written exclusively by trusted Admin SDK backend
+      allow create, update, delete: if false;
+    }
+
+    // Default deny for all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
