@@ -1002,6 +1002,91 @@ export class HospitalIoTPlatformStore {
     return device;
   }
 
+  /**
+   * Simplified Single-Device Demo Upload:
+   * Assumes 1 ESP32 device (`dev_esp32_pti_01`) is used by a single demo user (`pat_pti_901a2b3c4d`).
+   */
+  public recordDirectDemoReading(
+    creds: Esp32DeviceCredentials,
+    rawInput: {
+      heartRateBpm: number;
+      spo2Pct: number;
+      surfaceTempC: number;
+    }
+  ): VitalMeasurement {
+    const device = this.authenticateEsp32Device(creds);
+    const hospital = this.hospitals.get(device.hospitalId);
+    const thresholds =
+      hospital?.alertThresholds || DEFAULT_HOSPITAL_THRESHOLDS;
+
+    const demoPatient =
+      this.patients.get("pat_pti_901a2b3c4d") ||
+      Array.from(this.patients.values())[0];
+
+    const evaluation = evaluateVitalMeasurement(
+      {
+        heartRateBpm: Number(rawInput.heartRateBpm),
+        spo2Pct: Number(rawInput.spo2Pct),
+        surfaceTempC: Number(rawInput.surfaceTempC),
+      },
+      thresholds
+    );
+
+    const now = new Date().toISOString();
+    const measurementId = `meas_demo_${Date.now()}`;
+
+    const measurement: VitalMeasurement = {
+      id: measurementId,
+      measurementId,
+      hospitalId: device.hospitalId,
+      patientId: demoPatient.id,
+      patientName: demoPatient.fullName,
+      patientCodeAtCapture: demoPatient.patientCode,
+      sessionId: "sess_demo_direct",
+      deviceId: device.deviceId,
+      deviceName: device.name,
+      heartRateBpm: Number(rawInput.heartRateBpm),
+      spo2Pct: Number(rawInput.spo2Pct),
+      surfaceTempC: Number(rawInput.surfaceTempC),
+      tempSensorType: "MLX90614_SURFACE_IR",
+      opticalSensorType: "MAX30102_PROTOTYPE",
+      capturedAt: now,
+      uploadedAt: now,
+      syncStatus: "verified_online",
+      validityStatus: evaluation.validityStatus,
+      alertLevel: evaluation.alertLevel,
+      alertFlags: evaluation.alertFlags,
+      createdAt: now,
+    };
+
+    this.measurements.set(measurement.id, measurement);
+
+    device.connectionStatus = "online";
+    device.lastSeenAt = now;
+    device.updatedAt = now;
+    this.devices.set(device.id, device);
+
+    return measurement;
+  }
+
+  /**
+   * Updates the live Online/Offline connectivity status of the single demo ESP32 device.
+   */
+  public setDemoDeviceConnectionStatus(
+    creds: Esp32DeviceCredentials,
+    connectionStatus: "online" | "offline"
+  ): MonitoringDevice {
+    const device = this.authenticateEsp32Device(creds);
+    const now = new Date().toISOString();
+    device.connectionStatus = connectionStatus;
+    if (connectionStatus === "online") {
+      device.lastSeenAt = now;
+    }
+    device.updatedAt = now;
+    this.devices.set(device.id, device);
+    return device;
+  }
+
   public updateHospitalSettings(
     actor: AuthenticatedActor,
     hospitalId: string,

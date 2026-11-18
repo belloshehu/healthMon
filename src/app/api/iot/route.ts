@@ -58,6 +58,18 @@ export async function POST(req: NextRequest) {
         const { secretKeyHash: _h, ...safeDevice } = device;
         return NextResponse.json({ device: safeDevice }, { status: 200 });
       }
+      case "directDemoUpload": {
+        const measurement = store.recordDirectDemoReading(creds, payload);
+        return NextResponse.json({ measurement }, { status: 201 });
+      }
+      case "setDeviceConnectionStatus": {
+        const device = store.setDemoDeviceConnectionStatus(
+          creds,
+          payload.connectionStatus
+        );
+        const { secretKeyHash: _h, ...safeDevice } = device;
+        return NextResponse.json({ device: safeDevice }, { status: 200 });
+      }
       default:
         return NextResponse.json(
           {
