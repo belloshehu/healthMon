@@ -1,10 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import {
-  usePlatformSnapshot,
-  usePlatformMutations,
-} from "@/hooks/usePlatformData";
+import { useRealtimeVitals } from "@/hooks/useRealtimeVitals";
 import { PTI_CLINIC_NAME } from "@/types/models";
 import { formatTimestamp } from "@/lib/utils";
 import { VitalSignsChart } from "@/components/charts/VitalSignsChart";
@@ -18,12 +15,10 @@ import {
   Sliders,
   BatteryCharging,
   Clock,
+  Database,
 } from "lucide-react";
 
-const ALERT_BADGE: Record<
-  string,
-  { label: string; className: string }
-> = {
+const ALERT_BADGE: Record<string, { label: string; className: string }> = {
   normal: {
     label: "Normal",
     className: "bg-emerald-100 text-emerald-800 border-emerald-200",
@@ -40,50 +35,34 @@ const ALERT_BADGE: Record<
 
 export default function SimplifiedDashboardPage() {
   const [showSimulator, setShowSimulator] = useState<boolean>(true);
-  const { data, isLoading, error } = usePlatformSnapshot("usr_hosp_admin_pti");
-  const mutations = usePlatformMutations("usr_hosp_admin_pti");
+  const {
+    device,
+    readings,
+    isOnline,
+    isTimedOut,
+    secondsSinceLastSeen,
+    isLoading,
+    rtdbConnected,
+    rtdbError,
+    pushRealtimeReading,
+    setRealtimeDeviceStatus,
+  } = useRealtimeVitals();
 
   if (isLoading) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-2.5 bg-slate-50 p-8">
-        <progress className="w-48" aria-label="Loading PTI Clinic telemetry" />
+        <progress className="w-48" aria-label="Connecting to Firebase Realtime Database" />
         <p className="text-xs font-medium text-slate-500">
-          Connecting to ESP32 telemetry stream…
+          Connecting to Firebase Realtime Database…
         </p>
       </div>
     );
   }
 
-  if (error || !data) {
-    return (
-      <main className="mx-auto max-w-md p-8">
-        <div
-          role="alert"
-          className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-rose-900"
-        >
-          <h1 className="text-sm font-bold">Telemetry Error</h1>
-          <p className="mt-1 text-xs">
-            {error instanceof Error ? error.message : "Unable to load stream."}
-          </p>
-        </div>
-      </main>
-    );
-  }
-
-  // Dedicated single ESP32 device for the demo (`dev_esp32_pti_01`)
-  const primaryDevice =
-    data.devices.find((d) => d.deviceId === "dev_esp32_pti_01") ||
-    data.devices[0];
-
-  // Filter readings for the primary demo device (or fallback to all readings)
-  const deviceMeasurements = data.measurements.filter(
-    (m) => m.deviceId === primaryDevice.deviceId
-  );
-  const readings =
-    deviceMeasurements.length > 0 ? deviceMeasurements : data.measurements;
   const latest = readings[0];
-
-  const isOnline = primaryDevice.connectionStatus === "online";
+  const currentHr = device.heartRateBpm ?? latest?.heartRateBpm;
+  const currentSpo2 = device.spo2Pct ?? latest?.spo2Pct;
+  const currentTemp = device.surfaceTempC ?? latest?.surfaceTempC;
   const latestAlert = ALERT_BADGE[latest?.alertLevel || "normal"];
 
   return (
@@ -108,16 +87,21 @@ export default function SimplifiedDashboardPage() {
                   {PTI_CLINIC_NAME}
                 </span>
                 <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-semibold text-slate-600">
-                  {primaryDevice.serialNumber}
+                  {device.serialNumber}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-500">
-                Remote Vital Signs Monitor
+              <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                <Database className="h-3 w-3 text-sky-600" aria-hidden="true" />
+                <span>
+                  {rtdbConnected
+                    ? "Firebase Realtime DB Live"
+                    : "Connecting to RTDB…"}
+                </span>
               </p>
             </div>
           </div>
 
-          {/* Device Connectivity Status + Simulator Toggle */}
+          {/* Device Connectivity Status + 60s Heartbeat Timeout + Simulator Toggle */}
           <div className="flex items-center gap-2.5">
             <div
               role="status"
@@ -136,29 +120,40 @@ export default function SimplifiedDashboardPage() {
               />
               {isOnline ? (
                 <>
-                  <Wifi className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                  <Wifi
+                    className="h-3.5 w-3.5 text-emerald-600"
+                    aria-hidden="true"
+                  />
                   <span>Device Online</span>
                 </>
               ) : (
                 <>
-                  <WifiOff className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
-                  <span>Device Offline</span>
+                  <WifiOff
+                    className="h-3.5 w-3.5 text-slate-500"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    Device Offline{isTimedOut ? " (>60s timeout)" : ""}
+                  </span>
                 </>
               )}
             </div>
 
-            <div className="hidden items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 sm:flex">
+            <div className="hidden items-center gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 sm:flex">
               <span className="inline-flex items-center gap-1">
                 <BatteryCharging
                   className="h-3.5 w-3.5 text-slate-500"
                   aria-hidden="true"
                 />
-                {primaryDevice.batteryPct ?? 88}%
+                {device.batteryPct}%
               </span>
               <span className="text-slate-300">•</span>
-              <span className="inline-flex items-center gap-1">
-                <Clock className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
-                {formatTimestamp(primaryDevice.lastSeenAt)}
+              <span className="inline-flex items-center gap-1 font-mono text-[11px]">
+                <Clock
+                  className="h-3.5 w-3.5 text-slate-400"
+                  aria-hidden="true"
+                />
+                {secondsSinceLastSeen}s ago
               </span>
             </div>
 
@@ -168,7 +163,10 @@ export default function SimplifiedDashboardPage() {
               aria-expanded={showSimulator}
               className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
             >
-              <Sliders className="h-3.5 w-3.5 text-sky-700" aria-hidden="true" />
+              <Sliders
+                className="h-3.5 w-3.5 text-sky-700"
+                aria-hidden="true"
+              />
               {showSimulator ? "Hide Simulator" : "Simulate ESP32"}
             </button>
           </div>
@@ -176,6 +174,17 @@ export default function SimplifiedDashboardPage() {
       </header>
 
       <main className="mx-auto max-w-5xl space-y-5 px-4 py-6 sm:px-6">
+        {rtdbError && (
+          <div
+            role="alert"
+            className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900"
+          >
+            <strong>Realtime DB Notice:</strong> {rtdbError}. Ensure{" "}
+            <code>database.rules.json</code> is deployed via{" "}
+            <code>npx -y firebase-tools@latest deploy --only database</code>.
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h1
             id="main-dashboard-heading"
@@ -186,7 +195,7 @@ export default function SimplifiedDashboardPage() {
           </h1>
           {latest && (
             <div className="flex items-center gap-2 text-xs text-slate-500">
-              <span>Last reading: {formatTimestamp(latest.capturedAt)}</span>
+              <span>Updated {formatTimestamp(latest.capturedAt)}</span>
               <span
                 className={`rounded-md border px-2 py-0.5 text-[11px] font-bold ${latestAlert.className}`}
               >
@@ -196,11 +205,13 @@ export default function SimplifiedDashboardPage() {
           )}
         </div>
 
-        {/* Collapsible ESP32 Simulator for Live Testing */}
+        {/* Collapsible ESP32 Simulator for Live RTDB Testing */}
         {showSimulator && (
           <Esp32HardwareConsole
-            device={primaryDevice}
-            onUpdated={() => mutations.invalidate()}
+            device={device}
+            isOnline={isOnline}
+            onPushReading={pushRealtimeReading}
+            onToggleStatus={setRealtimeDeviceStatus}
           />
         )}
 
@@ -222,13 +233,13 @@ export default function SimplifiedDashboardPage() {
 
             <div className="mt-3 flex items-baseline gap-2">
               <span className="font-mono text-4xl font-black tracking-tight text-slate-900">
-                {latest ? latest.heartRateBpm : "—"}
+                {currentHr !== undefined ? currentHr : "—"}
               </span>
               <span className="text-sm font-bold text-rose-600">BPM</span>
             </div>
 
             <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5 text-[11px] text-slate-500">
-              <span>MAX30102 Sensor</span>
+              <span>MAX30102</span>
               <span>Ref: 50–110 BPM</span>
             </div>
           </div>
@@ -246,13 +257,13 @@ export default function SimplifiedDashboardPage() {
 
             <div className="mt-3 flex items-baseline gap-1.5">
               <span className="font-mono text-4xl font-black tracking-tight text-slate-900">
-                {latest ? latest.spo2Pct : "—"}
+                {currentSpo2 !== undefined ? currentSpo2 : "—"}
               </span>
               <span className="text-lg font-bold text-sky-600">%</span>
             </div>
 
             <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5 text-[11px] text-slate-500">
-              <span>MAX30102 Optical</span>
+              <span>MAX30102</span>
               <span>Ref: 94–100%</span>
             </div>
           </div>
@@ -270,7 +281,7 @@ export default function SimplifiedDashboardPage() {
 
             <div className="mt-3 flex items-baseline gap-1.5">
               <span className="font-mono text-4xl font-black tracking-tight text-slate-900">
-                {latest ? latest.surfaceTempC.toFixed(1) : "—"}
+                {currentTemp !== undefined ? currentTemp.toFixed(1) : "—"}
               </span>
               <span className="text-lg font-bold text-amber-600">°C</span>
             </div>
@@ -306,7 +317,7 @@ export default function SimplifiedDashboardPage() {
             }
           >
             <caption id="readings-log-caption">
-              Recent Device Readings ({readings.length})
+              Realtime Database Readings ({readings.length})
             </caption>
             <thead>
               <tr>

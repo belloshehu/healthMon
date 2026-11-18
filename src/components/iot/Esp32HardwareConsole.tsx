@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { MonitoringDevice } from "@/types/models";
+import { RtdbDeviceState } from "@/hooks/useRealtimeVitals";
 import {
   Wifi,
   WifiOff,
@@ -12,13 +12,21 @@ import {
 } from "lucide-react";
 
 interface Esp32HardwareConsoleProps {
-  device: MonitoringDevice;
-  onUpdated: () => void;
+  device: RtdbDeviceState;
+  isOnline: boolean;
+  onPushReading: (reading: {
+    heartRateBpm: number;
+    spo2Pct: number;
+    surfaceTempC: number;
+  }) => Promise<void>;
+  onToggleStatus: (nextStatus: "online" | "offline") => Promise<void>;
 }
 
 export function Esp32HardwareConsole({
   device,
-  onUpdated,
+  isOnline,
+  onPushReading,
+  onToggleStatus,
 }: Esp32HardwareConsoleProps) {
   const [heartRateInput, setHeartRateInput] = useState<number>(82);
   const [spo2Input, setSpo2Input] = useState<number>(98);
@@ -29,81 +37,50 @@ export function Esp32HardwareConsole({
     text: string;
   } | null>(null);
 
-  const isOnline = device.connectionStatus === "online";
-
   const handleToggleConnection = async () => {
     const nextStatus = isOnline ? "offline" : "online";
     setBusy(true);
     setFeedback(null);
     try {
-      const res = await fetch("/api/iot", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-device-id": device.deviceId,
-          "x-device-secret": "__DEV_SIMULATOR_AUTO__",
-        },
-        body: JSON.stringify({
-          endpoint: "setDeviceConnectionStatus",
-          payload: {
-            connectionStatus: nextStatus,
-          },
-        }),
+      await onToggleStatus(nextStatus);
+      setFeedback({
+        type: "success",
+        text: `Realtime DB /device/status updated to ${nextStatus.toUpperCase()}.`,
       });
-      if (res.ok) {
-        setFeedback({
-          type: "success",
-          text: `ESP32 status set to ${nextStatus.toUpperCase()}.`,
-        });
-        onUpdated();
-      }
+    } catch (err: unknown) {
+      setFeedback({
+        type: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to update /device/status in Realtime Database",
+      });
     } finally {
       setBusy(false);
     }
   };
 
   const handleSendReading = async () => {
-    if (!isOnline) {
-      setFeedback({
-        type: "error",
-        text: "Device is currently OFFLINE. Switch it to ONLINE to transmit readings.",
-      });
-      return;
-    }
-
     setBusy(true);
     setFeedback(null);
     try {
-      const res = await fetch("/api/iot", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-device-id": device.deviceId,
-          "x-device-secret": "__DEV_SIMULATOR_AUTO__",
-        },
-        body: JSON.stringify({
-          endpoint: "directDemoUpload",
-          payload: {
-            heartRateBpm: heartRateInput,
-            spo2Pct: spo2Input,
-            surfaceTempC: surfaceTempInput,
-          },
-        }),
+      await onPushReading({
+        heartRateBpm: heartRateInput,
+        spo2Pct: spo2Input,
+        surfaceTempC: surfaceTempInput,
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setFeedback({
-          type: "error",
-          text: data.message || "Failed to send reading",
-        });
-        return;
-      }
-
       setFeedback({
         type: "success",
-        text: `Transmitted: ${heartRateInput} BPM, ${spo2Input}% SpO₂, ${surfaceTempInput.toFixed(1)} °C.`,
+        text: `Saved to Realtime DB (/device & /readings): ${heartRateInput} BPM, ${spo2Input}% SpO₂, ${surfaceTempInput.toFixed(1)} °C.`,
       });
-      onUpdated();
+    } catch (err: unknown) {
+      setFeedback({
+        type: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to write to Firebase Realtime Database",
+      });
     } finally {
       setBusy(false);
     }
@@ -117,8 +94,11 @@ export function Esp32HardwareConsole({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
         <div className="flex items-center gap-2">
           <Cpu className="h-4 w-4 text-sky-400" aria-hidden="true" />
-          <h2 id="esp32-sim-heading" className="text-xs font-bold uppercase tracking-wider text-slate-200">
-            ESP32 Sensor Simulator ({device.serialNumber})
+          <h2
+            id="esp32-sim-heading"
+            className="text-xs font-bold uppercase tracking-wider text-slate-200"
+          >
+            ESP32 Realtime DB Simulator ({device.serialNumber})
           </h2>
         </div>
 
@@ -142,19 +122,19 @@ export function Esp32HardwareConsole({
             ) : (
               <>
                 <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
-                Set Online
+                Set Online (Heartbeat)
               </>
             )}
           </button>
 
           <button
             type="button"
-            disabled={busy || !isOnline}
+            disabled={busy}
             onClick={handleSendReading}
             className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-1.5 text-xs font-bold text-white shadow hover:bg-sky-500 disabled:opacity-40"
           >
             <Send className="h-3.5 w-3.5" aria-hidden="true" />
-            Send Reading
+            Push to RTDB
           </button>
         </div>
       </div>
@@ -236,9 +216,15 @@ export function Esp32HardwareConsole({
           }`}
         >
           {feedback.type === "success" ? (
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden="true" />
+            <CheckCircle2
+              className="h-3.5 w-3.5 shrink-0 text-emerald-400"
+              aria-hidden="true"
+            />
           ) : (
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" aria-hidden="true" />
+            <AlertTriangle
+              className="h-3.5 w-3.5 shrink-0 text-amber-400"
+              aria-hidden="true"
+            />
           )}
           <span>{feedback.text}</span>
         </div>

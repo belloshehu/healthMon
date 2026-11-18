@@ -1,0 +1,13 @@
+{
+  "rules": {
+    "device": {
+      ".read": true,
+      ".write": true
+    },
+    "readings": {
+      ".read": true,
+      ".write": true,
+      ".indexOn": ["timestamp", "capturedAt"]
+    }
+  }
+}
