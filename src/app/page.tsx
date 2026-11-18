@@ -13,7 +13,6 @@ import {
   Wifi,
   WifiOff,
   Sliders,
-  BatteryCharging,
   Clock,
   Database,
 } from "lucide-react";
@@ -38,36 +37,36 @@ export default function SimplifiedDashboardPage() {
   const {
     device,
     readings,
+    latestHr,
+    latestSpo2,
+    latestTemp,
     isOnline,
     isTimedOut,
     secondsSinceLastSeen,
     isLoading,
-    rtdbConnected,
-    rtdbError,
-    pushRealtimeReading,
-    setRealtimeDeviceStatus,
+    firestoreConnected,
+    firestoreError,
+    pushFirmwareReading,
+    setDeviceStatus,
   } = useRealtimeVitals();
 
   if (isLoading) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-2.5 bg-slate-50 p-8">
-        <progress className="w-48" aria-label="Connecting to Firebase Realtime Database" />
+        <progress className="w-48" aria-label="Connecting to Cloud Firestore" />
         <p className="text-xs font-medium text-slate-500">
-          Connecting to Firebase Realtime Database…
+          Listening for ESP32 uploads in Cloud Firestore…
         </p>
       </div>
     );
   }
 
   const latest = readings[0];
-  const currentHr = device.heartRateBpm ?? latest?.heartRateBpm;
-  const currentSpo2 = device.spo2Pct ?? latest?.spo2Pct;
-  const currentTemp = device.surfaceTempC ?? latest?.surfaceTempC;
   const latestAlert = ALERT_BADGE[latest?.alertLevel || "normal"];
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* Top Header with Live Device Online/Offline Status */}
+      {/* Top Header with Live ESP32 Online/Offline Status */}
       <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
         <a
           href="#main-dashboard-heading"
@@ -87,15 +86,15 @@ export default function SimplifiedDashboardPage() {
                   {PTI_CLINIC_NAME}
                 </span>
                 <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-semibold text-slate-600">
-                  {device.serialNumber}
+                  {device.deviceId}
                 </span>
               </div>
               <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
                 <Database className="h-3 w-3 text-sky-600" aria-hidden="true" />
                 <span>
-                  {rtdbConnected
-                    ? "Firebase Realtime DB Live"
-                    : "Connecting to RTDB…"}
+                  {firestoreConnected
+                    ? "Firestore Live (deviceReadings/{uid}/measurements)"
+                    : "Connecting to Firestore…"}
                 </span>
               </p>
             </div>
@@ -133,28 +132,18 @@ export default function SimplifiedDashboardPage() {
                     aria-hidden="true"
                   />
                   <span>
-                    Device Offline{isTimedOut ? " (>60s timeout)" : ""}
+                    Device Offline{isTimedOut ? " (>60s)" : ""}
                   </span>
                 </>
               )}
             </div>
 
-            <div className="hidden items-center gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 sm:flex">
-              <span className="inline-flex items-center gap-1">
-                <BatteryCharging
-                  className="h-3.5 w-3.5 text-slate-500"
-                  aria-hidden="true"
-                />
-                {device.batteryPct}%
-              </span>
-              <span className="text-slate-300">•</span>
-              <span className="inline-flex items-center gap-1 font-mono text-[11px]">
-                <Clock
-                  className="h-3.5 w-3.5 text-slate-400"
-                  aria-hidden="true"
-                />
-                {secondsSinceLastSeen}s ago
-              </span>
+            <div className="hidden items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-[11px] text-slate-600 sm:flex">
+              <Clock
+                className="h-3.5 w-3.5 text-slate-400"
+                aria-hidden="true"
+              />
+              <span>{secondsSinceLastSeen}s ago</span>
             </div>
 
             <button
@@ -174,14 +163,18 @@ export default function SimplifiedDashboardPage() {
       </header>
 
       <main className="mx-auto max-w-5xl space-y-5 px-4 py-6 sm:px-6">
-        {rtdbError && (
+        {firestoreError && (
           <div
             role="alert"
             className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900"
           >
-            <strong>Realtime DB Notice:</strong> {rtdbError}. Ensure{" "}
-            <code>database.rules.json</code> is deployed via{" "}
-            <code>npx -y firebase-tools@latest deploy --only database</code>.
+            <strong>Firestore Notice:</strong> {firestoreError}. Deploy{" "}
+            <code>firestore.rules</code> &amp;{" "}
+            <code>firestore.indexes.json</code> with{" "}
+            <code>
+              npx -y firebase-tools@latest deploy --only firestore:rules,firestore:indexes
+            </code>
+            .
           </div>
         )}
 
@@ -195,7 +188,7 @@ export default function SimplifiedDashboardPage() {
           </h1>
           {latest && (
             <div className="flex items-center gap-2 text-xs text-slate-500">
-              <span>Updated {formatTimestamp(latest.capturedAt)}</span>
+              <span>Last upload: {formatTimestamp(latest.capturedAt)}</span>
               <span
                 className={`rounded-md border px-2 py-0.5 text-[11px] font-bold ${latestAlert.className}`}
               >
@@ -205,13 +198,13 @@ export default function SimplifiedDashboardPage() {
           )}
         </div>
 
-        {/* Collapsible ESP32 Simulator for Live RTDB Testing */}
+        {/* Collapsible ESP32 Simulator */}
         {showSimulator && (
           <Esp32HardwareConsole
             device={device}
             isOnline={isOnline}
-            onPushReading={pushRealtimeReading}
-            onToggleStatus={setRealtimeDeviceStatus}
+            onPushReading={pushFirmwareReading}
+            onToggleStatus={setDeviceStatus}
           />
         )}
 
@@ -233,14 +226,14 @@ export default function SimplifiedDashboardPage() {
 
             <div className="mt-3 flex items-baseline gap-2">
               <span className="font-mono text-4xl font-black tracking-tight text-slate-900">
-                {currentHr !== undefined ? currentHr : "—"}
+                {latestHr !== undefined ? latestHr : "—"}
               </span>
               <span className="text-sm font-bold text-rose-600">BPM</span>
             </div>
 
             <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5 text-[11px] text-slate-500">
-              <span>MAX30102</span>
-              <span>Ref: 50–110 BPM</span>
+              <span>MAX30102 (heartRate)</span>
+              <span>40–200 BPM</span>
             </div>
           </div>
 
@@ -257,14 +250,14 @@ export default function SimplifiedDashboardPage() {
 
             <div className="mt-3 flex items-baseline gap-1.5">
               <span className="font-mono text-4xl font-black tracking-tight text-slate-900">
-                {currentSpo2 !== undefined ? currentSpo2 : "—"}
+                {latestSpo2 !== undefined ? latestSpo2 : "—"}
               </span>
               <span className="text-lg font-bold text-sky-600">%</span>
             </div>
 
             <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5 text-[11px] text-slate-500">
-              <span>MAX30102</span>
-              <span>Ref: 94–100%</span>
+              <span>MAX30102 (spo2)</span>
+              <span>70–100%</span>
             </div>
           </div>
 
@@ -281,14 +274,14 @@ export default function SimplifiedDashboardPage() {
 
             <div className="mt-3 flex items-baseline gap-1.5">
               <span className="font-mono text-4xl font-black tracking-tight text-slate-900">
-                {currentTemp !== undefined ? currentTemp.toFixed(1) : "—"}
+                {latestTemp !== undefined ? latestTemp.toFixed(1) : "—"}
               </span>
               <span className="text-lg font-bold text-amber-600">°C</span>
             </div>
 
             <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5 text-[11px] text-slate-500">
-              <span>MLX90614 IR</span>
-              <span>Ref: 34.0–37.5 °C</span>
+              <span>MLX90614 (temperatureC)</span>
+              <span>Surface IR</span>
             </div>
           </div>
         </section>
@@ -299,7 +292,7 @@ export default function SimplifiedDashboardPage() {
           title="3-Parameter Telemetry Trend"
         />
 
-        {/* Compact 5-Column Recent Readings Log */}
+        {/* Compact 5-Column Readings Log */}
         <div
           tabIndex={0}
           role="region"
@@ -317,7 +310,7 @@ export default function SimplifiedDashboardPage() {
             }
           >
             <caption id="readings-log-caption">
-              Realtime Database Readings ({readings.length})
+              Uploaded ESP32 Readings ({readings.length})
             </caption>
             <thead>
               <tr>
@@ -337,13 +330,13 @@ export default function SimplifiedDashboardPage() {
                       {formatTimestamp(m.capturedAt)}
                     </th>
                     <td className="font-mono text-xs font-bold text-rose-600">
-                      {m.heartRateBpm} BPM
+                      {m.hasHr ? `${m.heartRateBpm} BPM` : "—"}
                     </td>
                     <td className="font-mono text-xs font-bold text-sky-700">
-                      {m.spo2Pct}%
+                      {m.hasSpo2 ? `${m.spo2Pct}%` : "—"}
                     </td>
                     <td className="font-mono text-xs font-bold text-amber-700">
-                      {m.surfaceTempC.toFixed(1)} °C
+                      {m.hasTemp ? `${m.surfaceTempC.toFixed(1)} °C` : "—"}
                     </td>
                     <td>
                       <span

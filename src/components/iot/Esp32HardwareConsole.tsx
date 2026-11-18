@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { RtdbDeviceState } from "@/hooks/useRealtimeVitals";
+import { Esp32DeviceState } from "@/hooks/useRealtimeVitals";
 import {
   Wifi,
   WifiOff,
@@ -12,12 +12,12 @@ import {
 } from "lucide-react";
 
 interface Esp32HardwareConsoleProps {
-  device: RtdbDeviceState;
+  device: Esp32DeviceState;
   isOnline: boolean;
   onPushReading: (reading: {
-    heartRateBpm: number;
-    spo2Pct: number;
-    surfaceTempC: number;
+    heartRate?: number;
+    spo2?: number;
+    temperatureC?: number;
   }) => Promise<void>;
   onToggleStatus: (nextStatus: "online" | "offline") => Promise<void>;
 }
@@ -31,6 +31,9 @@ export function Esp32HardwareConsole({
   const [heartRateInput, setHeartRateInput] = useState<number>(82);
   const [spo2Input, setSpo2Input] = useState<number>(98);
   const [surfaceTempInput, setSurfaceTempInput] = useState<number>(36.5);
+  const [includeHr, setIncludeHr] = useState<boolean>(true);
+  const [includeSpo2, setIncludeSpo2] = useState<boolean>(true);
+  const [includeTemp, setIncludeTemp] = useState<boolean>(true);
   const [busy, setBusy] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{
     type: "success" | "error";
@@ -45,7 +48,7 @@ export function Esp32HardwareConsole({
       await onToggleStatus(nextStatus);
       setFeedback({
         type: "success",
-        text: `Realtime DB /device/status updated to ${nextStatus.toUpperCase()}.`,
+        text: `Device status set to ${nextStatus.toUpperCase()} in Firestore (/devices/${device.deviceId}).`,
       });
     } catch (err: unknown) {
       setFeedback({
@@ -53,7 +56,7 @@ export function Esp32HardwareConsole({
         text:
           err instanceof Error
             ? err.message
-            : "Failed to update /device/status in Realtime Database",
+            : "Failed to update device status in Firestore",
       });
     } finally {
       setBusy(false);
@@ -61,17 +64,25 @@ export function Esp32HardwareConsole({
   };
 
   const handleSendReading = async () => {
+    if (!includeHr && !includeSpo2 && !includeTemp) {
+      setFeedback({
+        type: "error",
+        text: "Nothing to upload — select at least one sensor parameter.",
+      });
+      return;
+    }
+
     setBusy(true);
     setFeedback(null);
     try {
       await onPushReading({
-        heartRateBpm: heartRateInput,
-        spo2Pct: spo2Input,
-        surfaceTempC: surfaceTempInput,
+        heartRate: includeHr ? heartRateInput : undefined,
+        spo2: includeSpo2 ? spo2Input : undefined,
+        temperatureC: includeTemp ? surfaceTempInput : undefined,
       });
       setFeedback({
         type: "success",
-        text: `Saved to Realtime DB (/device & /readings): ${heartRateInput} BPM, ${spo2Input}% SpO₂, ${surfaceTempInput.toFixed(1)} °C.`,
+        text: "Uploaded to Firestore (deviceReadings/{uid}/measurements/{uploadId}).",
       });
     } catch (err: unknown) {
       setFeedback({
@@ -79,7 +90,7 @@ export function Esp32HardwareConsole({
         text:
           err instanceof Error
             ? err.message
-            : "Failed to write to Firebase Realtime Database",
+            : "Firestore upload failed — check deployed firestore.rules",
       });
     } finally {
       setBusy(false);
@@ -98,7 +109,7 @@ export function Esp32HardwareConsole({
             id="esp32-sim-heading"
             className="text-xs font-bold uppercase tracking-wider text-slate-200"
           >
-            ESP32 Realtime DB Simulator ({device.serialNumber})
+            ESP32 Firmware Simulator ({device.deviceId})
           </h2>
         </div>
 
@@ -122,7 +133,7 @@ export function Esp32HardwareConsole({
             ) : (
               <>
                 <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
-                Set Online (Heartbeat)
+                Send Heartbeat (Online)
               </>
             )}
           </button>
@@ -134,73 +145,105 @@ export function Esp32HardwareConsole({
             className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-1.5 text-xs font-bold text-white shadow hover:bg-sky-500 disabled:opacity-40"
           >
             <Send className="h-3.5 w-3.5" aria-hidden="true" />
-            Push to RTDB
+            UPLOAD (PATCH Firestore)
           </button>
         </div>
       </div>
 
       <div className="mt-3.5 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
-          <div className="flex justify-between text-xs">
-            <label htmlFor="sim-hr" className="text-slate-400">
-              Heart Rate (MAX30102)
-            </label>
+          <div className="flex items-center justify-between text-xs">
+            <span className="inline-flex items-center gap-1.5">
+              <input
+                id="inc-hr"
+                type="checkbox"
+                checked={includeHr}
+                onChange={(e) => setIncludeHr(e.target.checked)}
+                className="h-3.5 w-3.5 accent-rose-500"
+              />
+              <label htmlFor="inc-hr" className="text-slate-300">
+                heartRate
+              </label>
+            </span>
             <span className="font-mono font-bold text-rose-400">
-              {heartRateInput} BPM
+              {includeHr ? `${heartRateInput} BPM` : "Not captured"}
             </span>
           </div>
           <input
             id="sim-hr"
-            name="heartRateBpm"
+            aria-label="Heart rate BPM"
             type="range"
-            min={45}
-            max={175}
+            min={40}
+            max={200}
+            disabled={!includeHr}
             value={heartRateInput}
             onChange={(e) => setHeartRateInput(Number(e.target.value))}
-            className="mt-2 w-full accent-rose-500"
+            className="mt-2 w-full accent-rose-500 disabled:opacity-30"
           />
         </div>
 
         <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
-          <div className="flex justify-between text-xs">
-            <label htmlFor="sim-spo2" className="text-slate-400">
-              SpO₂ (MAX30102)
-            </label>
+          <div className="flex items-center justify-between text-xs">
+            <span className="inline-flex items-center gap-1.5">
+              <input
+                id="inc-spo2"
+                type="checkbox"
+                checked={includeSpo2}
+                onChange={(e) => setIncludeSpo2(e.target.checked)}
+                className="h-3.5 w-3.5 accent-sky-500"
+              />
+              <label htmlFor="inc-spo2" className="text-slate-300">
+                spo2
+              </label>
+            </span>
             <span className="font-mono font-bold text-sky-400">
-              {spo2Input}%
+              {includeSpo2 ? `${spo2Input}%` : "Not captured"}
             </span>
           </div>
           <input
             id="sim-spo2"
-            name="spo2Pct"
+            aria-label="SpO2 percentage"
             type="range"
-            min={80}
+            min={70}
             max={100}
+            disabled={!includeSpo2}
             value={spo2Input}
             onChange={(e) => setSpo2Input(Number(e.target.value))}
-            className="mt-2 w-full accent-sky-500"
+            className="mt-2 w-full accent-sky-500 disabled:opacity-30"
           />
         </div>
 
         <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
-          <div className="flex justify-between text-xs">
-            <label htmlFor="sim-temp" className="text-slate-400">
-              Temp (MLX90614 IR)
-            </label>
+          <div className="flex items-center justify-between text-xs">
+            <span className="inline-flex items-center gap-1.5">
+              <input
+                id="inc-temp"
+                type="checkbox"
+                checked={includeTemp}
+                onChange={(e) => setIncludeTemp(e.target.checked)}
+                className="h-3.5 w-3.5 accent-amber-500"
+              />
+              <label htmlFor="inc-temp" className="text-slate-300">
+                temperatureC
+              </label>
+            </span>
             <span className="font-mono font-bold text-amber-400">
-              {surfaceTempInput.toFixed(1)} °C
+              {includeTemp
+                ? `${surfaceTempInput.toFixed(1)} °C`
+                : "Not captured"}
             </span>
           </div>
           <input
             id="sim-temp"
-            name="surfaceTempC"
+            aria-label="Surface temperature Celsius"
             type="range"
-            min={34.0}
-            max={40.5}
+            min={25.0}
+            max={42.0}
             step={0.1}
+            disabled={!includeTemp}
             value={surfaceTempInput}
             onChange={(e) => setSurfaceTempInput(Number(e.target.value))}
-            className="mt-2 w-full accent-amber-500"
+            className="mt-2 w-full accent-amber-500 disabled:opacity-30"
           />
         </div>
       </div>

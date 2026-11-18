@@ -1,5 +1,6 @@
 {
   "projects": {
+    "default": "safecrowdai-f5d43",
     "healthmon": "safecrowdai-f5d43"
   },
   "targets": {},

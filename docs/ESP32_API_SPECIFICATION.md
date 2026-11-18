@@ -1,98 +1,60 @@
-# ESP32 Realtime Database Integration Guide (Simplified Single-Device Demo)
+# ESP32 Firmware & Cloud Firestore Integration Guide (`safecrowdai-f5d43`)
 
-The simplified PTI Clinic demo connects directly to **Firebase Realtime Database**:
-`https://safecrowdai-f5d43-default-rtdb.firebaseio.com`
-
-No Cloud Functions or Blaze billing plan are required.
+This document describes how the ESP32 Arduino sketch ([firmware/healthos_esp32/healthos_esp32.ino](file:///Users/belloshehu/dev/healthos/firmware/healthos_esp32/healthos_esp32.ino)) and the Next.js Web Dashboard ([src/hooks/useRealtimeVitals.ts](file:///Users/belloshehu/dev/healthos/src/hooks/useRealtimeVitals.ts)) interact via **Cloud Firestore**.
 
 ---
 
-## 1. Realtime Database JSON Structure
+## 1. Firestore Document Paths & Fields Used by the ESP32
 
-### `/device` (Live Status, Heartbeat & Latest Vitals)
-The dashboard subscribes to `/device` and combines `status === "online"` with a **60-second `lastSeen` heartbeat timeout**:
-```json
-{
-  "deviceId": "dev_esp32_pti_01",
-  "serialNumber": "ESP32-PTI-001",
-  "status": "online",
-  "lastSeen": 1794997700000,
-  "lastSeenIso": "2026-11-18T11:30:00.000Z",
-  "batteryPct": 92,
-  "heartRateBpm": 82,
-  "spo2Pct": 98,
-  "surfaceTempC": 36.5
-}
+### 1.1 Vital Measurements Upload (`PIN_UPLOAD`)
+When `PIN_UPLOAD` (GPIO 27) is pressed on the ESP32, `uploadReading()` authenticates via **Firebase Anonymous Auth** (`uid`, `idToken`) and sends an `HTTP PATCH` to:
+```
+https://firestore.googleapis.com/v1/projects/safecrowdai-f5d43/databases/(default)/documents/deviceReadings/{uid}/measurements/{lastUploadId}
 ```
 
-### `/readings/{readingId}` (Historical Readings for Chart & Table)
-```json
-{
-  "id": "meas_1794997700000",
-  "deviceId": "dev_esp32_pti_01",
-  "heartRateBpm": 82,
-  "spo2Pct": 98,
-  "surfaceTempC": 36.5,
-  "timestamp": 1794997700000,
-  "capturedAt": "2026-11-18T11:30:00.000Z",
-  "alertLevel": "normal"
-}
-```
+#### Document Fields
+| Field | Firestore Type | Description |
+| :--- | :--- | :--- |
+| `deviceId` | `stringValue` | `"dev_esp32_pti_01"` |
+| `anonymousUid` | `stringValue` | ESP32's Firebase Anonymous Auth `uid` |
+| `measurementType` | `stringValue` | `"prototype"` |
+| `uploadedBy` | `stringValue` | `"esp32"` |
+| `heartRate` | `integerValue` | Optional (included when `reading.hrValid == true`, `40..200` BPM) |
+| `heartRateEpoch` | `integerValue` | Optional Unix timestamp in **seconds** when HR was captured |
+| `spo2` | `integerValue` | Optional (included when `reading.spo2Valid == true`, `70..100` %) |
+| `spo2Epoch` | `integerValue` | Optional Unix timestamp in **seconds** when $\text{SpO}_2$ was captured |
+| `temperatureC` | `doubleValue` | Optional (included when `reading.tempValid == true`, MLX90614 surface °C) |
+| `temperatureEpoch` | `integerValue` | Optional Unix timestamp in **seconds** when temp was captured |
+
+### 1.2 Device Online/Offline Status & Heartbeat
+- Every upload from the ESP32 automatically marks the device **Online** on the web dashboard.
+- In addition, [healthos_esp32.ino](file:///Users/belloshehu/dev/healthos/firmware/healthos_esp32/healthos_esp32.ino) includes a non-blocking `sendHeartbeat()` every 30 seconds that sends an `HTTP PATCH` to:
+  ```
+  https://firestore.googleapis.com/v1/projects/safecrowdai-f5d43/databases/(default)/documents/devices/dev_esp32_pti_01
+  ```
+  with `{ deviceId: "dev_esp32_pti_01", anonymousUid: uid, status: "online", lastSeenEpoch: epochNow() }`.
+- If no upload or heartbeat is received within **60 seconds**, the web dashboard automatically transitions the status badge to **`Device Offline (>60s)`**.
 
 ---
 
-## 2. ESP32 Arduino C++ Sketch Snippet (REST API via `HTTPClient`)
+## 2. Firmware Bug Fixed in `healthos_esp32.ino`
 
+In `setup()`, the original sketch had a duplicate declaration that shadowed the global `bool mlxReady`:
 ```cpp
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
-#include <time.h>
+// BEFORE (Bug: local `bool mlxReady` shadowed global `mlxReady`)
+mlxReady = mlx.begin(0x5A, &Wire);
+bool mlxReady = false;
+mlxReady = mlx.begin(0x5A, &Wire);
 
-const char* FIREBASE_RTDB_URL = "https://safecrowdai-f5d43-default-rtdb.firebaseio.com";
+// AFTER (Fixed in firmware/healthos_esp32/healthos_esp32.ino)
+mlxReady = mlx.begin(0x5A, &Wire);
+```
 
-void uploadVitalsToRTDB(int heartRateBpm, int spo2Pct, float surfaceTempC) {
-  if (WiFi.status() != WL_CONNECTED) return;
+---
 
-  WiFiClientSecure client;
-  client.setInsecure(); // Or client.setCACert(GTS_ROOT_R1_CA)
-  HTTPClient http;
+## 3. Deploying Firestore Rules & Indexes to `safecrowdai-f5d43`
 
-  unsigned long long nowMs = (unsigned long long)time(nullptr) * 1000ULL;
-
-  // 1. Update /device (status, lastSeen, and latest 3 parameters)
-  String deviceUrl = String(FIREBASE_RTDB_URL) + "/device.json";
-  http.begin(client, deviceUrl);
-  http.addHeader("Content-Type", "application/json");
-
-  String deviceJson = String("{") +
-    "\"deviceId\":\"dev_esp32_pti_01\"," +
-    "\"serialNumber\":\"ESP32-PTI-001\"," +
-    "\"status\":\"online\"," +
-    "\"lastSeen\":" + String(nowMs) + "," +
-    "\"batteryPct\":92," +
-    "\"heartRateBpm\":" + String(heartRateBpm) + "," +
-    "\"spo2Pct\":" + String(spo2Pct) + "," +
-    "\"surfaceTempC\":" + String(surfaceTempC, 1) +
-  "}";
-  http.PUT(deviceJson);
-  http.end();
-
-  // 2. Append to /readings/{id} for the dashboard chart & log
-  String readingId = "meas_" + String(nowMs);
-  String readingUrl = String(FIREBASE_RTDB_URL) + "/readings/" + readingId + ".json";
-  http.begin(client, readingUrl);
-  http.addHeader("Content-Type", "application/json");
-
-  String readingJson = String("{") +
-    "\"id\":\"" + readingId + "\"," +
-    "\"deviceId\":\"dev_esp32_pti_01\"," +
-    "\"heartRateBpm\":" + String(heartRateBpm) + "," +
-    "\"spo2Pct\":" + String(spo2Pct) + "," +
-    "\"surfaceTempC\":" + String(surfaceTempC, 1) + "," +
-    "\"timestamp\":" + String(nowMs) +
-  "}";
-  http.PUT(readingJson);
-  http.end();
-}
+Before uploading from the ESP32 or opening the dashboard, deploy the aligned Firestore rules and `measurements` collection-group index:
+```bash
+npx -y firebase-tools@latest deploy --only firestore:rules,firestore:indexes
 ```

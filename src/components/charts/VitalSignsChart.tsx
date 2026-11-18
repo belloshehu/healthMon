@@ -15,7 +15,13 @@ import { VitalMeasurement } from "@/types/models";
 import { formatTimestamp } from "@/lib/utils";
 
 interface VitalSignsChartProps {
-  measurements: VitalMeasurement[];
+  measurements: Array<
+    VitalMeasurement & {
+      hasHr?: boolean;
+      hasSpo2?: boolean;
+      hasTemp?: boolean;
+    }
+  >;
   title?: string;
 }
 
@@ -32,11 +38,9 @@ export function VitalSignsChart({
         minute: "2-digit",
       }),
       fullTime: formatTimestamp(m.capturedAt),
-      patientName: m.patientName || m.patientCodeAtCapture,
-      heartRateBpm: m.heartRateBpm,
-      spo2Pct: m.spo2Pct,
-      surfaceTempC: m.surfaceTempC,
-      syncStatus: m.syncStatus,
+      heartRateBpm: m.hasHr === false ? null : m.heartRateBpm,
+      spo2Pct: m.hasSpo2 === false ? null : m.spo2Pct,
+      surfaceTempC: m.hasTemp === false ? null : m.surfaceTempC,
     }));
 
   if (chartData.length === 0) {
@@ -53,7 +57,7 @@ export function VitalSignsChart({
         <div className="flex items-center gap-2.5">
           <h3 className="text-sm font-bold text-slate-900">{title}</h3>
           <span className="text-xs text-slate-500">
-            MAX30102 (Prototype HR/SpO₂) • MLX90614 (Surface IR °C)
+            MAX30102 (heartRate, spo2) • MLX90614 (temperatureC)
           </span>
         </div>
         <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
@@ -87,6 +91,7 @@ export function VitalSignsChart({
             <Line
               yAxisId="left"
               type="monotone"
+              connectNulls
               dataKey="heartRateBpm"
               name="HR (BPM)"
               stroke="#e11d48"
@@ -96,6 +101,7 @@ export function VitalSignsChart({
             <Line
               yAxisId="right"
               type="monotone"
+              connectNulls
               dataKey="spo2Pct"
               name="SpO₂ (%)"
               stroke="#0284c7"
@@ -105,6 +111,7 @@ export function VitalSignsChart({
             <Line
               yAxisId="right"
               type="monotone"
+              connectNulls
               dataKey="surfaceTempC"
               name="IR Temp (°C)"
               stroke="#d97706"

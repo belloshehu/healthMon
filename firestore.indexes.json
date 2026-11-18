@@ -18,95 +18,25 @@
       ]
     },
     {
-      "collectionGroup": "patients",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "assignedDoctorId", "order": "ASCENDING" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "devices",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "lastSeenAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "measurementSessions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "measurementSessions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "patientId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "measurements",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "hospitalId", "order": "ASCENDING" },
         { "fieldPath": "capturedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "measurements",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "patientId", "order": "ASCENDING" },
-        { "fieldPath": "capturedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "measurements",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "deviceId", "order": "ASCENDING" },
-        { "fieldPath": "capturedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "measurements",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "syncStatus", "order": "ASCENDING" },
-        { "fieldPath": "uploadedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "hospitalMembers",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "role", "order": "ASCENDING" },
-        { "fieldPath": "active", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "auditLogs",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "hospitalId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     }
   ],
   "fieldOverrides": [
+    {
+      "collectionGroup": "measurements",
+      "fieldPath": "deviceId",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" },
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" },
+        { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+      ]
+    },
     {
       "collectionGroup": "auditLogs",
       "fieldPath": "metadata",
